@@ -871,7 +871,7 @@
   function loseLife(){
     if (!state || !state.running) return;
     state.lives -= 1;
-    var idx = 3 - state.lives; // 0-based index of the bullet just spent
+    var idx = state.lives; // after losing a life: 2→rightmost, 1→middle, 0→leftmost
     if (livesEls[idx]) livesEls[idx].classList.add('spent');
     if (state.lives <= 0){
       endGame();
