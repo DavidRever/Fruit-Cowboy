@@ -309,6 +309,60 @@
     text-align:right;
   }
 
+  #pause-btn{
+    width:38px;
+    height:38px;
+    border-radius:50%;
+    background:rgba(20,10,6,.55);
+    border:1px solid rgba(231,178,60,.4);
+    color:var(--gold-light);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex-shrink:0;
+    transition:transform .12s ease;
+  }
+  #pause-btn:active{ transform:scale(.9); }
+  #pause-btn svg{ width:16px; height:16px; }
+  #pause-btn .icon-play{ display:none; margin-left:2px; }
+  #pause-btn.is-paused .icon-pause{ display:none; }
+  #pause-btn.is-paused .icon-play{ display:block; }
+
+  #game-area.paused .falling-object{ pointer-events:none; }
+
+  #pause-overlay{
+    position:absolute;
+    inset:0;
+    z-index:30;
+    background:rgba(14,8,5,.72);
+    display:none;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:14px;
+    cursor:pointer;
+  }
+  #pause-overlay.visible{ display:flex; }
+  #pause-overlay .resume-icon{
+    width:60px;
+    height:60px;
+    border-radius:50%;
+    background:linear-gradient(180deg, var(--gold-light) 0%, var(--gold) 55%, var(--gold-dark) 100%);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    box-shadow:0 6px 14px rgba(0,0,0,.4);
+  }
+  #pause-overlay .resume-icon svg{ width:24px; height:24px; color:var(--ink); margin-left:3px; }
+  #pause-overlay p{
+    font-family:'Rye', serif;
+    color:var(--cream);
+    font-size:19px;
+    letter-spacing:1px;
+    text-shadow:0 2px 4px rgba(0,0,0,.5);
+  }
+
   #game-area{
     position:relative;
     z-index:2;
@@ -573,6 +627,10 @@
         <div class="bullet" data-life="2"></div>
         <div class="bullet" data-life="3"></div>
       </div>
+      <button id="pause-btn" type="button" aria-label="Pause">
+        <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1.2"/><rect x="14" y="4" width="4" height="16" rx="1.2"/></svg>
+        <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </button>
       <div id="score-plate">
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 2l1.6 4.8L18 5l-2.4 4.2L20 12l-4.4 1.6L18 19l-4.4-2.6L12 22l-1.6-5.6L6 19l2.4-5.2L4 12l4.4-2 -2.4-4.2 4.4 1.8L12 2z" fill="#e7b23c"/></svg>
         <span id="score-value">0</span>
@@ -580,6 +638,12 @@
     </div>
     <div id="game-area"></div>
     <div id="screen-flash"></div>
+    <div id="pause-overlay">
+      <div class="resume-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </div>
+      <p>Paused</p>
+    </div>
   </section>
 
   <!-- ======= GAME OVER SCREEN ======= -->
@@ -636,6 +700,8 @@
   var newBestTag    = document.getElementById('new-best-tag');
   var fullscreenBtn = document.getElementById('fullscreen-btn');
   var fullscreenLbl = document.getElementById('fullscreen-label');
+  var pauseBtn       = document.getElementById('pause-btn');
+  var pauseOverlay   = document.getElementById('pause-overlay');
 
   var BEST_KEY = 'sundownShowdownBestScore';
   var bestScore = parseInt(localStorage.getItem(BEST_KEY), 10) || 0;
@@ -775,7 +841,7 @@
     if (!state || !state.running) return;
 
     var nowMs = performance.now();
-    var elapsedSec = (nowMs - state.startTime) / 1000;
+    var elapsedSec = (nowMs - state.startTime - state.pausedMs) / 1000;
     var fallMs = currentFallDuration(elapsedSec);
     var minGap = fallMs * 0.32;
 
@@ -837,6 +903,7 @@
         loseLife();
       }
       el.remove();
+      forgetObject(el);
     }
 
     el.addEventListener('pointerdown', function(ev){
@@ -849,6 +916,7 @@
       if (type.kind === 'bomb'){
         // let the bomb pass safely off screen
         el.remove();
+        forgetObject(el);
         return;
       }
       // missed a fruit or a coin: costs a life
@@ -859,9 +927,16 @@
       flashScreen('rgba(200,64,42,0.35)', 220);
       loseLife();
       el.remove();
+      forgetObject(el);
     };
 
-    state.activeObjects.push(el);
+    state.activeObjects.push({ el: el, anim: anim });
+  }
+
+  function forgetObject(el){
+    if (!state) return;
+    var idx = state.activeObjects.findIndex(function(o){ return o.el === el; });
+    if (idx !== -1) state.activeObjects.splice(idx, 1);
   }
 
   function updateScore(){
@@ -882,11 +957,50 @@
      Spawn scheduling (dynamic interval)
   --------------------------------------------------------- */
   function scheduleNextSpawn(){
-    if (!state || !state.running) return;
+    if (!state || !state.running || state.paused) return;
     spawnObject();
-    var elapsedSec = (performance.now() - state.startTime) / 1000;
+    var elapsedSec = (performance.now() - state.startTime - state.pausedMs) / 1000;
     var interval = currentSpawnInterval(elapsedSec);
+    state.lastSpawnScheduleTime = performance.now();
+    state.lastSpawnScheduleInterval = interval;
     state.spawnTimeout = setTimeout(scheduleNextSpawn, interval);
+  }
+
+  /* ---------------------------------------------------------
+     Pause / resume
+  --------------------------------------------------------- */
+  function pauseGame(){
+    if (!state || !state.running || state.paused) return;
+    state.paused = true;
+    state.pauseStart = performance.now();
+    clearTimeout(state.spawnTimeout);
+
+    var elapsedSincePlan = performance.now() - state.lastSpawnScheduleTime;
+    state.remainingSpawnDelay = Math.max(80, state.lastSpawnScheduleInterval - elapsedSincePlan);
+
+    state.activeObjects.forEach(function(o){ o.anim.pause(); });
+
+    pauseBtn.classList.add('is-paused');
+    pauseOverlay.classList.add('visible');
+    gameArea.classList.add('paused');
+  }
+
+  function resumeGame(){
+    if (!state || !state.running || !state.paused) return;
+    state.paused = false;
+    state.pausedMs += performance.now() - state.pauseStart;
+
+    state.activeObjects.forEach(function(o){ o.anim.play(); });
+    state.spawnTimeout = setTimeout(scheduleNextSpawn, state.remainingSpawnDelay || 400);
+
+    pauseBtn.classList.remove('is-paused');
+    pauseOverlay.classList.remove('visible');
+    gameArea.classList.remove('paused');
+  }
+
+  function togglePause(){
+    if (!state || !state.running) return;
+    if (state.paused) resumeGame(); else pauseGame();
   }
 
   /* ---------------------------------------------------------
@@ -903,15 +1017,24 @@
     screenFlash.style.background = 'transparent';
     livesEls.forEach(function(b){ b.classList.remove('spent'); });
     scoreValueEl.textContent = '0';
+    pauseBtn.classList.remove('is-paused');
+    pauseOverlay.classList.remove('visible');
+    gameArea.classList.remove('paused');
 
     recomputeLanes();
 
     state = {
       running: true,
+      paused: false,
       score: 0,
       lives: 3,
       startTime: performance.now(),
+      pausedMs: 0,
+      pauseStart: null,
       spawnTimeout: null,
+      lastSpawnScheduleTime: performance.now(),
+      lastSpawnScheduleInterval: BASE_SPAWN_MS,
+      remainingSpawnDelay: BASE_SPAWN_MS,
       activeObjects: []
     };
 
@@ -922,7 +1045,11 @@
   function endGame(){
     if (!state) return;
     state.running = false;
+    state.paused = false;
     clearTimeout(state.spawnTimeout);
+    pauseBtn.classList.remove('is-paused');
+    pauseOverlay.classList.remove('visible');
+    gameArea.classList.remove('paused');
 
     var finalScore = state.score;
     var isNewBest = finalScore > bestScore;
@@ -987,9 +1114,20 @@
   document.getElementById('menu-btn').addEventListener('click', function(){
     showScreen(startScreen);
   });
+  pauseBtn.addEventListener('click', function(ev){
+    ev.stopPropagation();
+    togglePause();
+  });
+  pauseOverlay.addEventListener('click', function(){
+    if (state && state.paused) resumeGame();
+  });
 
   window.addEventListener('resize', function(){
     if (state && state.running) recomputeLanes();
+  });
+
+  document.addEventListener('visibilitychange', function(){
+    if (document.hidden && state && state.running && !state.paused) pauseGame();
   });
 
   /* ---------------------------------------------------------
